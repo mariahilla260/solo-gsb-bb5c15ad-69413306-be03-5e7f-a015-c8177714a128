@@ -371,6 +371,39 @@ test('印刷备料：非法参数返回 400', async () => {
   }
 });
 
+test('印刷备料：极小损耗率 1e-10 按十进制精确取整（科学计数法与普通小数一致）', async () => {
+  const srv = await startServer();
+  try {
+    const prep = (rate) => ({ copies: 1, makereadySheets: 0, processWasteRate: rate, sheetsPerPack: 100 });
+    for (const rate of [1e-10, '1e-10', '0.0000000001']) {
+      const res = await postJson(`${srv.baseUrl}/api/impose`, {
+        totalPages: 4, sheetsPerSignature: 1, binding: 'left', flip: 'short',
+        materialPrep: prep(rate),
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.materialPrep.signatures[0].requiredSheets, 2);
+      assert.equal(res.body.materialPrep.totals.requiredSheets, 2);
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test('印刷备料：需领纸超出安全整数时返回明确 400，不输出失真数量', async () => {
+  const srv = await startServer();
+  try {
+    const res = await postJson(`${srv.baseUrl}/api/impose`, {
+      totalPages: 400, sheetsPerSignature: 100, binding: 'left', flip: 'short',
+      materialPrep: { copies: 100000000, makereadySheets: 0, processWasteRate: 0.9999999999, sheetsPerPack: 1 },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /安全整数/);
+    assert.equal(res.body.materialPrep, undefined);
+  } finally {
+    await srv.close();
+  }
+});
+
 /* ------------------------------ 采购报价组合 ------------------------------ */
 
 const QUOTES = {

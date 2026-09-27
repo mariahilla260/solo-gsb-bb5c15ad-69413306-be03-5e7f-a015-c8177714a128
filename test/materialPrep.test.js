@@ -169,3 +169,88 @@ test('过程损耗率接受数字字符串（表单风格）', () => {
   assert.equal(r.materialPrep.enabled, true);
   assert.equal(r.materialPrep.totals.requiredSheets, 4146);
 });
+
+test('极小损耗率：一帖净用纸 1 张、开机 0、损耗率 1e-10 时须领 2 张（不得九位预舍入成 1）', () => {
+  // 4 页、每帖 1 张 -> 1 帖；份数 1 -> 净用纸 1。
+  // ceil(1 / (1 − 1e-10)) = ceil(1.0000000001…) = 2。
+  const base = { totalPages: 4, sheetsPerSignature: 1, binding: 'left', flip: 'short' };
+  const prep = { copies: 1, makereadySheets: 0, processWasteRate: 1e-10, sheetsPerPack: 100 };
+  const r = computeImposition({ ...base, materialPrep: prep });
+  const row = r.materialPrep.signatures[0];
+  assert.equal(row.netSheets, 1);
+  assert.equal(row.requiredSheets, 2);
+  assert.equal(row.processWaste, 1);
+  assert.equal(row.totalWaste, 1);
+  assert.equal(r.materialPrep.totals.requiredSheets, 2);
+});
+
+test('极小损耗率影响整包采购：每包 1 张时旧实现少算为 1 包，正确为 2 包 2 张', () => {
+  const base = { totalPages: 4, sheetsPerSignature: 1, binding: 'left', flip: 'short' };
+  const prep = { copies: 1, makereadySheets: 0, processWasteRate: 1e-10, sheetsPerPack: 1 };
+  const t = computeImposition({ ...base, materialPrep: prep }).materialPrep.totals;
+  assert.equal(t.requiredSheets, 2);
+  assert.equal(t.purchasePacks, 2);
+  assert.equal(t.purchaseSheets, 2);
+  assert.equal(t.packRemainder, 0);
+});
+
+test('科学计数法（数字 / 字符串）与普通小数字面值结果完全一致', () => {
+  const base = { totalPages: 16, sheetsPerSignature: 2, binding: 'left', flip: 'short' };
+  const make = (rate) => computeImposition({
+    ...base,
+    materialPrep: { copies: 1000, makereadySheets: 10, processWasteRate: rate, sheetsPerPack: 500 },
+  }).materialPrep.totals;
+  const expected = make('0.03');
+  for (const rate of [0.03, 3e-2, '3e-2', '3E-2', '0.030000000000000']) {
+    const t = make(rate);
+    assert.deepEqual(t, expected, `损耗率 ${String(rate)} 应与 0.03 等价`);
+  }
+  // 1e-10 三种写法等价（数字科学计数法、字符串科学计数法、普通小数）
+  const makeTiny = (rate) => computeImposition({
+    totalPages: 4, sheetsPerSignature: 1, binding: 'left', flip: 'short',
+    materialPrep: { copies: 1, makereadySheets: 0, processWasteRate: rate, sheetsPerPack: 100 },
+  }).materialPrep.totals.requiredSheets;
+  assert.equal(makeTiny(1e-10), 2);
+  assert.equal(makeTiny('1e-10'), 2);
+  assert.equal(makeTiny('0.0000000001'), 2);
+});
+
+test('各帖极小损耗分别向上取整：多帖时逐帖多领，不被汇总掩盖', () => {
+  // 16 页、每帖 1 张 -> 4 帖各 1 张，份数 1 -> 每帖净用纸 1；
+  // 每帖 ceil(1 / (1 − 1e-10)) = 2，合计 8；若先合并 ceil(4/0.9999999999) = 5。
+  const prep = { copies: 1, makereadySheets: 0, processWasteRate: '1e-10', sheetsPerPack: 10 };
+  const r = computeImposition({
+    totalPages: 16, sheetsPerSignature: 1, binding: 'left', flip: 'short',
+    materialPrep: prep,
+  });
+  assert.deepEqual(r.materialPrep.signatures.map((x) => x.requiredSheets), [2, 2, 2, 2]);
+  assert.equal(r.materialPrep.totals.requiredSheets, 8);
+  assert.equal(r.materialPrep.totals.purchasePacks, 1);
+  assert.equal(r.materialPrep.totals.purchaseSheets, 10);
+});
+
+test('张数超出安全整数范围返回明确错误，不输出失真数量', () => {
+  // 100 张/帖 × 1 亿份 = 100 亿净用纸；损耗率 0.9999999999（良品率 1e-10）
+  // -> 需领纸 1e20 张，远超 Number.MAX_SAFE_INTEGER（约 9.007e15）。
+  assert.throws(
+    () => computeImposition({
+      totalPages: 400, sheetsPerSignature: 100, binding: 'left', flip: 'short',
+      materialPrep: { copies: 100000000, makereadySheets: 0, processWasteRate: 0.9999999999, sheetsPerPack: 1 },
+    }),
+    /安全整数/
+  );
+});
+
+test('非法损耗率字面值仍返回明确错误（科学计数法 / Infinity / 空串）', () => {
+  const base = { totalPages: 4, sheetsPerSignature: 1, binding: 'left', flip: 'short' };
+  for (const rate of [1, '1', '1e0', NaN, Infinity, 'Infinity', '', '   ', '0xff', 'abc', 2e0]) {
+    assert.throws(
+      () => computeImposition({
+        ...base,
+        materialPrep: { copies: 1, makereadySheets: 0, processWasteRate: rate, sheetsPerPack: 100 },
+      }),
+      /过程损耗率/,
+      `损耗率 ${String(rate)} 应被拒绝`
+    );
+  }
+});
