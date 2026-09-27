@@ -350,6 +350,44 @@ test('印刷备料：响应 materialPrep 含逐帖数据与整包采购汇总；
   }
 });
 
+test('印刷备料：极小损耗率精确逐帖 ceil（科学计数法与普通小数一致），整包采购不少算', async () => {
+  const srv = await startServer();
+  try {
+    // 8 页、每帖 1 张 -> 2 帖各 1 张；份数 1、开机 0、率 1e-10 -> 每帖需领 2 张。
+    // 旧实现 9 位预舍入会误算为每帖 1 张（合计 2），整包 ceil(2/3) 少算成 1 包。
+    for (const rate of [1e-10, '1e-10', '0.0000000001']) {
+      const res = await postJson(`${srv.baseUrl}/api/impose`, {
+        totalPages: 8, sheetsPerSignature: 1, binding: 'left', flip: 'short',
+        materialPrep: { copies: 1, makereadySheets: 0, processWasteRate: rate, sheetsPerPack: 3 },
+      });
+      assert.equal(res.status, 200, JSON.stringify(rate));
+      assert.deepEqual(res.body.materialPrep.signatures.map((x) => x.requiredSheets), [2, 2]);
+      const t = res.body.materialPrep.totals;
+      assert.equal(t.requiredSheets, 4);
+      assert.equal(t.purchasePacks, 2); // ceil(4/3)，不能少算为 1 包
+      assert.equal(t.purchaseSheets, 6);
+      assert.equal(t.packRemainder, 2);
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test('印刷备料：需领纸超出安全整数范围返回明确 400，不输出失真数量', async () => {
+  const srv = await startServer();
+  try {
+    const res = await postJson(`${srv.baseUrl}/api/impose`, {
+      totalPages: 4, sheetsPerSignature: 1, binding: 'left', flip: 'short',
+      materialPrep: { copies: 100000000, makereadySheets: 0, processWasteRate: '0.9999999999', sheetsPerPack: 500 },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /安全整数/);
+    assert.equal(res.body.materialPrep, undefined);
+  } finally {
+    await srv.close();
+  }
+});
+
 test('印刷备料：非法参数返回 400', async () => {
   const srv = await startServer();
   try {

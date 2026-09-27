@@ -23,13 +23,19 @@
 
 ## 快速开始（Docker Compose 一键启动）
 
+一条命令完成镜像构建并启动服务：
+
 ```bash
 docker compose up --build
 ```
 
-启动后浏览器访问：**http://localhost:8080**
+启动后访问（容器内固定监听 `8080`，Compose 将宿主机同名端口映射到容器）：
 
-必要配置：`PORT` 环境变量（缺省 `8080`，Compose 已在 `docker-compose.yml` 中设为 `8080` 并映射同名端口）。依赖安装（`npm ci`）随镜像构建完成，拼版计算线程池随服务启动一并初始化，无需额外步骤。
+- **Web 页面地址**：http://localhost:8080 （拼版预演界面）
+- **API 地址 / 端口**：`POST http://localhost:8080/api/impose`（拼版计算，端口 `8080`）
+- **健康检查**：`GET http://localhost:8080/api/health`
+
+可用 `PORT` 环境变量覆盖容器监听端口（缺省 `8080`；如需改用宿主机其他端口，调整 `docker-compose.yml` 的端口映射即可）。依赖安装（`npm ci`）随镜像构建完成，拼版计算线程池随服务启动一并初始化，无需额外步骤。
 
 （停止服务：`Ctrl + C`；后台运行：`docker compose up --build -d`；移除容器：`docker compose down`。）
 
@@ -278,8 +284,12 @@ npm test           # 运行全部测试（拼版逻辑单元测试 + HTTP 接口
 
 - **成品份数** `copies`：≥ 1 的整数（每份成品需要每帖全部纸张各一张）；
 - **每帖开机损耗张数** `makereadySheets`：≥ 0 的整数，**每个帖分别加一次**（各帖独立开机校机）；
-- **过程损耗率** `processWasteRate`：0 ≤ r < 1 的小数，`0.03` 表示 3%（表单按百分数填写，自动除以 100 上送）；
+- **过程损耗率** `processWasteRate`：0 ≤ r < 1 的小数，`0.03` 表示 3%（表单按百分数填写，自动除以 100 上送）；**支持科学计数法**（如 `1e-10`），数字与字符串均可（如 `0.03`、`"0.03"`、`3e-2`、`"3e-2"`）；
 - **每包张数** `sheetsPerPack`：≥ 1 的整数，最终采购量按整包向上取整。
+
+> **按输入损耗率的十进制值精确计算**：服务端把损耗率按十进制字面量解析为精确分数（BigInt），逐帖 `ceil((净用纸 + 开机损耗) / (1 − 损耗率))` **全程整数运算，不做任何浮点预舍入**。例如一帖净用纸 1 张、开机损耗 0、损耗率 `1e-10` 时，`ceil(1 / 0.9999999999) = 2` 张（必须多领 1 张覆盖损耗），而不会被抹成 1 张；整包采购在逐帖精确汇总后再向上取整，同样不会少算。科学计数法与普通小数只要十进制值相同，结果就完全一致。
+>
+> 当任何张数（逐帖需领纸 / 需领纸合计 / 采购包数 / 采购张数）**超出安全整数范围**（`Number.MAX_SAFE_INTEGER` ≈ 9.007 × 10¹⁵）时，接口返回 **400 明确错误**（中文原因），**不输出失真数量**——请降低成品份数或过程损耗率后重试。
 
 计算**按帖独立进行，逐帖取整后再汇总**（核心约束：禁止先合并各帖再计算损耗）：
 
@@ -578,9 +588,9 @@ npm test           # 运行全部测试（拼版逻辑单元测试 + HTTP 接口
 - `materialPrep`：**可选**，印刷备料参数对象（缺省 / `null` / `false` 不启用，响应不含备料字段，与旧版本完全一致）。字段：
   - `copies`：成品份数，≥ 1 的整数；
   - `makereadySheets`：每帖开机损耗张数，≥ 0 的整数（每帖分别加一次）；
-  - `processWasteRate`：过程损耗率，0 ≤ r < 1 的小数（`0.03` = 3%）；
+  - `processWasteRate`：过程损耗率，0 ≤ r < 1 的小数（`0.03` = 3%），**支持科学计数法**（`1e-10`），数字或字符串均可；按输入十进制值精确计算（BigInt 分数，无浮点预舍入），科学计数法与普通小数同值同结果；
   - `sheetsPerPack`：每包张数，≥ 1 的整数。
-  - 逐帖 `ceil((净用纸 + 开机损耗) / (1 − 过程损耗率))` 后汇总，再按每包向上取整采购；参数非对象、份数 / 包数非正整数、开机损耗为负、损耗率越界（< 0 或 ≥ 1）均返回 400 明确错误。
+  - 逐帖 `ceil((净用纸 + 开机损耗) / (1 − 过程损耗率))` 后汇总，再按每包向上取整采购；参数非对象、份数 / 包数非正整数、开机损耗为负、损耗率越界（< 0 或 ≥ 1）均返回 400 明确错误；任一张数（逐帖需领纸 / 合计 / 采购包数 / 采购张数）超出安全整数范围（约 9.007 × 10¹⁵）时返回 400 明确错误，不输出失真数量。
 - `purchaseQuotes`：**可选**，采购报价组合参数对象（缺省 / `null` / `false` 不启用，响应不含报价组合字段，与旧版本完全一致）。字段：
   - `demandSheets`：手工需求张数，≥ 1 的整数，**可缺省**——缺省时自动取同次请求 `materialPrep` 汇总后的整包采购张数（`totals.purchaseSheets`）；未启用备料又未填需求张数返回 400；
   - `quotes`：1～8 条报价，每条含 `supplier`（非空、不重复，≤ 50 字符）/ `sheetsPerPack`（≥ 1 整数）/ `pricePerPackCents`（每包价格，**分为单位的非负整数**，如 `1234` = 12.34 元）/ `minPacks`（≥ 0 整数）/ `maxPacks`（≥ 1 且 ≥ `minPacks` 的整数）；
@@ -716,7 +726,7 @@ npm test           # 运行全部测试（拼版逻辑单元测试 + HTTP 接口
 
 启用双版本共版印刷时，顶层增加 `dualVersion`（结构与示例见上文「双版本共版印刷」一节）：回显 `copiesA` / `copiesB` 与去重升序后的 `changedPages`；`rows[]` 逐面给出 `signature` / `sheet` / `side` / `leftPage` / `rightPage`（空白页位为 `null`）/ `changedPages`（本面含有的改动页）/ `shared`（是否共版）/ `plates[]`（共版为 1 块 `shared` 印版、印次 = A + B；拆版为 `A`、`B` 两块印版、各按自身份数印刷）；`totals` 汇总 `sideCount`（面数）/ `sharedSideCount` / `splitSideCount` / `sharedPlateCount` / `splitPlateCount` / `plateCount`（印版总数）/ `savedPlateCount`（较全部拆版节省的印版数）/ `impressions`（总印次）。未启用时响应中不含 `dualVersion` 字段。
 
-参数非法时返回 `400` 与错误信息（含纸张厚度 / 最大补偿量为负，尺寸参数为负、非数字或只提供部分尺寸，`balancedSplit` / `chapterSplit` 非布尔值，两种分帖模式同时启用，章节起始页非数组 / 为空 / 非整数 / 重复 / 未递增 / 越界，观察记录非数组 / 超过 12 条 / 索引越界 / 重复观察 / 字段非法，`productionMarks` 非布尔值、未启用适配检查就开启生产标记、`markSizeMm` 非正数或超过 100mm，备料参数 `materialPrep` 非对象、成品份数 / 每包张数非正整数、开机损耗为负、过程损耗率不在 [0, 1)，采购报价 `purchaseQuotes` 非对象、未启用备料又未给需求张数、报价非数组 / 为空 / 超过 8 条、供应商为空或重复、每包张数非正整数、每包价格（分）为负或非整数、包数边界非法（< 0 / < 1 / 最多少于最少），双版本共版 `dualVersion` 非对象、A / B 版份数非正整数、改动页码缺失 / 为空 / 非整数 / 越界（1 ~ totalPages）/ 区间起点大于终点 / 条目无法解析，以及库存批次领纸 `stockBatches` 非对象、未启用备料就启用本模块、批次非数组 / 为空 / 超过 12 个、批号为空或重复、可用张数非正整数、允许帖号非整数 / 超出帖数范围 / 同批重复等情况）。另提供 `GET /api/health` 健康检查。
+参数非法时返回 `400` 与错误信息（含纸张厚度 / 最大补偿量为负，尺寸参数为负、非数字或只提供部分尺寸，`balancedSplit` / `chapterSplit` 非布尔值，两种分帖模式同时启用，章节起始页非数组 / 为空 / 非整数 / 重复 / 未递增 / 越界，观察记录非数组 / 超过 12 条 / 索引越界 / 重复观察 / 字段非法，`productionMarks` 非布尔值、未启用适配检查就开启生产标记、`markSizeMm` 非正数或超过 100mm，备料参数 `materialPrep` 非对象、成品份数 / 每包张数非正整数、开机损耗为负、过程损耗率不在 [0, 1)（含无法解析或精度 / 量级越界的写法），以及备料计算出的张数（逐帖需领纸 / 合计 / 采购包数 / 采购张数）超出安全整数范围无法精确表示，采购报价 `purchaseQuotes` 非对象、未启用备料又未给需求张数、报价非数组 / 为空 / 超过 8 条、供应商为空或重复、每包张数非正整数、每包价格（分）为负或非整数、包数边界非法（< 0 / < 1 / 最多少于最少），双版本共版 `dualVersion` 非对象、A / B 版份数非正整数、改动页码缺失 / 为空 / 非整数 / 越界（1 ~ totalPages）/ 区间起点大于终点 / 条目无法解析，以及库存批次领纸 `stockBatches` 非对象、未启用备料就启用本模块、批次非数组 / 为空 / 超过 12 个、批号为空或重复、可用张数非正整数、允许帖号非整数 / 超出帖数范围 / 同批重复等情况）。另提供 `GET /api/health` 健康检查。
 
 调用示例（生成带双面生产标记的拼版清单，460×330 纸张放 210×297 成品页，短边翻转）：
 
@@ -755,6 +765,23 @@ curl -s -X POST http://localhost:8080/api/impose \
 # => { "signatureCount": 2, "netSheets": 4000, "makereadySheets": 20, "processWaste": 126,
 #      "totalWaste": 146, "requiredSheets": 4146, "purchasePacks": 9,
 #      "sheetsPerPack": 500, "purchaseSheets": 4500, "packRemainder": 354 }
+```
+
+调用示例（极小损耗率精确取整：4 页 1 帖净用纸 1 张、开机损耗 0、损耗率 `1e-10`，需领纸精确向上取整为 2 张）：
+
+```bash
+curl -s -X POST http://localhost:8080/api/impose \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "totalPages": 4,
+    "sheetsPerSignature": 1,
+    "binding": "left",
+    "flip": "short",
+    "materialPrep": { "copies": 1, "makereadySheets": 0, "processWasteRate": "1e-10", "sheetsPerPack": 10 }
+  }' | jq '.materialPrep.signatures[0] | { netSheets, requiredSheets, processWaste }'
+# => { "netSheets": 1, "requiredSheets": 2, "processWaste": 1 }
+# 数字 1e-10、字符串 "1e-10" 与普通小数 0.0000000001 结果一致；
+# 若算得张数超出安全整数范围（约 9.007e15），接口返回 400 明确错误而非失真数量。
 ```
 
 调用示例（在同一请求中启用采购报价组合，需求张数缺省自动接入备料整包采购张数 4500）：
